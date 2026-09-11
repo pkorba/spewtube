@@ -1,0 +1,13 @@
+maubot: 0.1.0
+id: com.github.pkorba.spewtube
+version: 1.0.0
+license: MIT
+modules:
+  - spewtube
+dependencies:
+  - spotipyFree >= 1.9.14
+  - yt-dlp >= 2026.8.19
+  - yt-dlp-ejs >= 0.8.0
+extra_files:
+  - requirements.txt
+main_class: SpewTubeBot

@@ -1,0 +1,3 @@
+spotipyFree >= 1.9.14
+yt-dlp >= 2026.8.19
+yt-dlp-ejs >= 0.8.0

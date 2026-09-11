@@ -1,6 +1,10 @@
 # SpewTube Bot
 A maubot plugin that scans your chats for links to Spotify tracks, and finds corresponding links on YouTube. Additionally, it provides a command that lets you search for videos on YouTube.
 
+<img width="40%" height="40%" alt="spotify" src="https://github.com/user-attachments/assets/81f1a6dd-5383-478a-be9c-42a0a623707a" />
+<img width="40%" height="40%" alt="youtube" src="https://github.com/user-attachments/assets/928ee3bd-e1fa-46bf-adcf-9c9e7700ec06" />
+
+
 ## Installation
 The plugin requires the following Python packages that are not part of the default maubot installation:
 * yt-dlp

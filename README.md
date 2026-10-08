@@ -1,5 +1,5 @@
 # SpewTube Bot
-A maubot plugin that scans your chats for links to Spotify tracks, and finds corresponding links on YouTube. Additionally, it provides a command that lets you search for videos on YouTube.
+A maubot plugin that scans your chats for links to Spotify tracks, and finds corresponding links on YouTube. Additionally, it provides commands that let you search for music/videos on Spotify and YouTube.
 
 <img width="40%" height="40%" alt="spotify" src="https://github.com/user-attachments/assets/81f1a6dd-5383-478a-be9c-42a0a623707a" />
 <img width="40%" height="40%" alt="youtube" src="https://github.com/user-attachments/assets/928ee3bd-e1fa-46bf-adcf-9c9e7700ec06" />
@@ -26,12 +26,12 @@ Other than that, `yt-dlp` needs `deno` or some other JavaScript runtime to solve
 `spotipyFree` and `yt-dlp` can break often, so keep them somewhat up to date.
 
 ## Usage
-Plugin is scanning for incoming Spotify links when `enable_redirect` if set to `true`. You just send a link to Spotify track in the chat and bot should pick that up. As of now it only supports link to tracks, not artists nor albums.
+Plugin is scanning for incoming Spotify links when `enable_redirect` if set to `true`. You just send a link to Spotify track in the chat and bot should pick that up. As of now it only supports links to tracks, not artists nor albums.
 
-To search for YouTube videos, type the command and the title of the video you'd want to see:
-```
-!yt query
-```
+Additionally, plugin supports searching in YouTube and Spotify using following commands:
+* `!yt <query>` - alternatively `!youtube`; search for music/videos in YouTube
+* `!sp <query>` - alternatively `!spotify`; search for music tracks in Spotify
+* `!music <query>` - search using both YouTube and Spotify
 
 ## Configuration  
 You can configure the plugin in maubot's control panel.  

@@ -133,26 +133,30 @@ class SpewTubeBot(Plugin):
         await evt.reply(content)
 
     async def _prepare_music_message(
-            self, yt: SongData | None,
+            self,
+            yt: SongData | None,
             sp: SongData | None
     ) -> TextMessageEventContent:
         html = ""
         body = ""
+
+        yt_author, sp_author = await self._get_authors(yt, sp)
+
         if yt:
             html += "<b>YouTube:</b> "
             body += "**YouTube:** "
             html += await self._get_url_title(yt.title, yt.url)
             body += await self._get_url_title(yt.title, yt.url, False)
-            html += await self._get_elem("Author", yt.author)
-            body += await self._get_elem("Author", yt.author, False)
+            html += await self._get_elem("Author", yt_author)
+            body += await self._get_elem("Author", yt_author, False)
 
         if sp:
             html += "<b>Spotify:</b> "
             body += "**Spotify:** "
             html += await self._get_url_title(sp.title, sp.url)
             body += await self._get_url_title(sp.title, sp.url, False)
-            html += await self._get_elem("Author", sp.author)
-            body += await self._get_elem("Author", sp.author, False)
+            html += await self._get_elem("Author", sp_author)
+            body += await self._get_elem("Author", sp_author, False)
 
         thumbnail, width, height, title = "", 0, 0, ""
         if sp and sp.thumbnail:
@@ -181,6 +185,26 @@ class SpewTubeBot(Plugin):
             body=body,
             formatted_body=html
         )
+
+    async def _get_authors(self, yt: SongData | None, sp: SongData | None) -> Tuple[str, str]:
+        if sp and yt:
+            # skip yt_author - use just the one from Spotify or YouTube
+            if sp.author and yt.author:
+                if sp.author.lower() in yt.author.lower():
+                    sp_author = sp.author
+                elif yt.author.lower() in sp.author.lower():
+                    # Put shared author under both titles - Spotify data is under YT data
+                    sp_author = yt.author
+                else:
+                    return yt.author, sp.author
+            elif not sp.author:
+                sp_author = yt.author
+            else:
+                sp_author = sp.author
+
+            return "", sp_author
+
+        return yt.author if yt else "", sp.author if sp else ""
 
     def _spot_track(self, track_id: str) -> str:
         try:

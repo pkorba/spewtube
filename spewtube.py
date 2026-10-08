@@ -1,15 +1,31 @@
+import asyncio
 from typing import Any, Tuple, Type
 
 import filetype
 import yt_dlp
 from SpotipyFree import Spotify
 from aiohttp import ClientTimeout, ClientError
+from attr import dataclass
 from mautrix.errors import MatrixResponseError
 from mautrix.types import TextMessageEventContent, MessageType, Format
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from spotapi.exceptions import SongError
+from yt_dlp.utils import ExtractorError, DownloadError
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command
+
+
+@dataclass
+class SongData:
+    url: str
+    title: str
+    author: str
+    length: str
+    views: str
+    thumbnail: str
+    width: int
+    height: int
+    source: str
 
 
 class Config(BaseProxyConfig):
@@ -36,27 +52,23 @@ class SpewTubeBot(Plugin):
         if evt.sender == self.client.mxid:
             return
         await evt.mark_read()
+
+        # Remove duplicated matches
+        urls = []
         for url in matches:
-            yt_search_query = await self.loop.run_in_executor(None, self._spot_search, url[1])
+            if url[1] not in urls:
+                urls.append(url[1])
+
+        for url in urls:
+            yt_search_query = await self.loop.run_in_executor(None, self._spot_track, url)
             info = await self.loop.run_in_executor(None, self._yt_search, yt_search_query)
             if not info:
                 continue
-            info = await self._parse_info(info)
-            content = await self._prepare_message(info)
-            await evt.reply(content)
 
-    def _spot_search(self, track_id: str) -> str:
-        try:
-            song = self.sp.track(track_id)
-        except SongError as e:
-            self.log.error(f"Identifying track failed: {e}")
-            return ""
-        title = song.get("name", "")
-        artist = ""
-        artists = song.get("artists", "")
-        if artists:
-            artist = artists[0].get("name")
-        return f"{title}{f' - {artist}' if artist else ''}"
+            info = await self._parse_yt_info(info)
+            content = await self._prepare_message(info)
+
+            await evt.reply(content)
 
     @command.new(name="yt", aliases=["youtube"], help="Search on YouTube")
     @command.argument("query", pass_raw=True, required=True)
@@ -65,75 +77,206 @@ class SpewTubeBot(Plugin):
         if not query:
             await evt.reply("> **Usage:** !yt <query>")
             return
+
         info = await self.loop.run_in_executor(None, self._yt_search, query)
         if not info:
             await evt.reply(f"> No results found for **{query}**")
             return
-        info = await self._parse_info(info)
+
+        info = await self._parse_yt_info(info)
         content = await self._prepare_message(info)
+
         await evt.reply(content)
+
+    @command.new(name="sp", aliases=["spotify"], help="Search on Spotify")
+    @command.argument("query", pass_raw=True, required=True)
+    async def spotify(self, evt: MessageEvent, query: str) -> None:
+        await evt.mark_read()
+        if not query:
+            await evt.reply("> **Usage:** !sp <query>")
+            return
+
+        info = await self.loop.run_in_executor(None, self._spot_search, query)
+        if not info:
+            await evt.reply(f"> No results found for **{query}**")
+            return
+
+        info = await self._parse_sp_info(info)
+        content = await self._prepare_message(info)
+
+        await evt.reply(content)
+
+    @command.new(name="music", help="Search on YouTube and Spotify")
+    @command.argument("query", pass_raw=True, required=True)
+    async def music(self, evt: MessageEvent, query: str) -> None:
+        await evt.mark_read()
+        if not query:
+            await evt.reply("> **Usage:** !music <query>")
+            return
+
+        yt_future = self.loop.run_in_executor(None, self._yt_search, query)
+        sp_future = self.loop.run_in_executor(None, self._spot_search, query)
+        yt_result, sp_result = await asyncio.gather(yt_future, sp_future)
+        if not yt_result and not sp_result:
+            await evt.reply(f"> No results found for **{query}**")
+            return
+
+        yt_info = None
+        sp_info = None
+        if yt_result:
+            yt_info = await self._parse_yt_info(yt_result)
+        if sp_result:
+            sp_info = await self._parse_sp_info(sp_result)
+
+        content = await self._prepare_music_message(yt_info, sp_info)
+
+        await evt.reply(content)
+
+    async def _prepare_music_message(
+            self, yt: SongData | None,
+            sp: SongData | None
+    ) -> TextMessageEventContent:
+        html = ""
+        body = ""
+        if yt:
+            html += "<b>YouTube:</b> "
+            body += "**YouTube:** "
+            html += await self._get_url_title(yt.title, yt.url)
+            body += await self._get_url_title(yt.title, yt.url, False)
+            html += await self._get_elem("Author", yt.author)
+            body += await self._get_elem("Author", yt.author, False)
+
+        if sp:
+            html += "<b>Spotify:</b> "
+            body += "**Spotify:** "
+            html += await self._get_url_title(sp.title, sp.url)
+            body += await self._get_url_title(sp.title, sp.url, False)
+            html += await self._get_elem("Author", sp.author)
+            body += await self._get_elem("Author", sp.author, False)
+
+        thumbnail, width, height, title = "", 0, 0, ""
+        if sp and sp.thumbnail:
+            thumbnail, width, height, title = sp.thumbnail, sp.width, sp.height, sp.title
+        elif yt and yt.thumbnail:
+            thumbnail, width, height, title = yt.thumbnail, yt.width, yt.height, yt.title
+
+        if thumbnail:
+            html += await self._get_image(
+                thumbnail,
+                f"Thumbnail for {title}",
+                (width, height)
+            )
+            body += await self._get_image(
+                thumbnail,
+                f"Thumbnail for {title}",
+                (width, height),
+                False
+            )
+
+        html = f"<blockquote>{html}</blockquote>"
+
+        return TextMessageEventContent(
+            msgtype=MessageType.NOTICE,
+            format=Format.HTML,
+            body=body,
+            formatted_body=html
+        )
+
+    def _spot_track(self, track_id: str) -> str:
+        try:
+            song = self.sp.track(track_id)
+        except (KeyError, SongError) as e:
+            self.log.error(f"Identifying track failed: {e}")
+            return ""
+
+        title = song.get("name", "")
+        artist = ""
+        artists = song.get("artists", "")
+        if artists:
+            artist = artists[0].get("name")
+
+        return f"{title}{f' - {artist}' if artist else ''}"
+
+    def _spot_search(self, query: str) -> Any:
+        if not query:
+            return None
+
+        try:
+            results = self.sp.search(query, limit=1)
+        except SongError as e:
+            self.log.error(f"Searching Spotify failed: {e}")
+            return None
+
+        tracks = results.get("tracks", {}).get("items", [])
+        return tracks
+
+    async def _parse_sp_info(self, data: Any) -> SongData:
+        result = data[0]
+        duration_ms = result.get("duration_ms", 0)
+        minutes, seconds = divmod(duration_ms // 1000, 60)
+        thumb, width, height = await self._parse_sp_photos(
+            result.get("album", {}).get("images", [])
+        )
+
+        return SongData(
+            url=f"https://open.spotify.com/track/{result.get('track_id', '')}",
+            title=result.get('name', ''),
+            author=", ".join(artist["name"] for artist in result.get("artists", [])),
+            length=f"{minutes}:{seconds:02d}",
+            views="",
+            thumbnail=thumb,
+            width=width,
+            height=height,
+            source="Spotify"
+        )
+
+    async def _parse_sp_photos(self, images: Any) -> Tuple[str, int, int]:
+        if not images:
+            return "", 0, 0
+
+        thumb = await self._get_thumbnail_url(images[0]["url"])
+        width, height = await self._scale_dimensions(
+            int(images[0]['width']),
+            int(images[0]['height'])
+        )
+
+        return thumb, width, height
 
     def _yt_search(self, query: str) -> dict[str, str] | None:
         if not query:
             return None
+
         ydl_opts = {
             'default_search': 'ytsearch',
             'max_downloads': 1,
             'noplaylist': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
+            try:
+                info = ydl.extract_info(query, download=False)
+            except (ExtractorError, DownloadError) as e:
+                self.log.error(f"yt-dlp extraction: {e}")
+                return None
 
             if 'entries' in info and len(info['entries']) > 0:
-                result = info['entries'][0]
-                extracted_info = {
-                    'webpage_url': result.get('webpage_url'),
-                    'thumbnails': result.get('thumbnails'),
-                    'title': result.get('title'),
-                    'uploader': result.get('uploader'),
-                    'duration_string': result.get('duration_string'),
-                    'view_count': result.get('view_count'),
-                }
-                return extracted_info
+                return info['entries'][0]
+
         return None
 
-    async def _parse_info(self, info: dict[str, Any]) -> dict[str, Any]:
-        info["view_count"] = await self._parse_votes(int(info['view_count']))
-        info['thumb'], info['width'], info['height'] = await self._parse_photos(info["thumbnails"])
-        return info
+    async def _parse_yt_info(self, data: Any) -> SongData:
+        thumb, width, height = await self._parse_photos(data.get("thumbnails", []))
 
-    async def _prepare_message(self, info: dict[str, Any]) -> TextMessageEventContent:
-        html = await self._get_url_title(info['title'], info['webpage_url'])
-        body = await self._get_url_title(info['title'], info['webpage_url'], False)
-        html += await self._get_elem("Author", info['uploader'])
-        body += await self._get_elem("Author", info['uploader'], False)
-        html += await self._get_elem("Length", info['duration_string'])
-        body += await self._get_elem("Length", info['duration_string'], False)
-        html += await self._get_elem("Views", info['view_count'])
-        body += await self._get_elem("Views", info['view_count'], False)
-        html += await self._get_image(
-            info['thumb'],
-            f"Thumbnail for {info['title']}",
-            (info["width"], info["height"])
+        return SongData(
+            url=data.get('webpage_url', ''),
+            title=data.get('title', ''),
+            author=data.get('uploader', ''),
+            length=data.get('duration_string', ''),
+            views=await self._parse_votes(int(data.get('view_count', ''))),
+            thumbnail=thumb,
+            width=width,
+            height=height,
+            source="YouTube"
         )
-        body += await self._get_image(
-            info['thumb'],
-            f"Thumbnail for {info['title']}",
-            (info["width"], info["height"]),
-            False
-        )
-        html += await self._get_footer("YouTube")
-        body += await self._get_footer("YouTube", False)
-
-        html = f"<blockquote>{html}</blockquote>"
-
-        content = TextMessageEventContent(
-            msgtype=MessageType.NOTICE,
-            format=Format.HTML,
-            body=body,
-            formatted_body=html
-        )
-        return content
 
     async def _parse_votes(self, value: int) -> str:
         """
@@ -143,6 +286,7 @@ class SpewTubeBot(Plugin):
         """
         if not value:
             return ""
+
         millions = divmod(value, 1000000)
         thousands = divmod(millions[1], 1000)
         if millions[0]:
@@ -151,6 +295,7 @@ class SpewTubeBot(Plugin):
             formatted_value = f"{thousands[0]}.{thousands[1] // 100}K"
         else:
             formatted_value = f"{thousands[1]}"
+
         return formatted_value
 
     async def _parse_photos(self, thumbnails: list[Any]) -> Tuple[str, int, int]:
@@ -165,6 +310,7 @@ class SpewTubeBot(Plugin):
                     int(thumb['width']),
                     int(thumb['height'])
                 )
+
                 return new_thumb, width, height
 
         new_thumb = await self._get_thumbnail_url(thumbs[-1]["url"].split("?")[0])
@@ -172,13 +318,48 @@ class SpewTubeBot(Plugin):
             int(thumbs[-1]['width']),
             int(thumbs[-1]['height'])
         )
+
         return new_thumb, width, height
+
+    async def _prepare_message(self, info: SongData) -> TextMessageEventContent:
+        html = await self._get_url_title(info.title, info.url)
+        body = await self._get_url_title(info.title, info.url, False)
+        html += await self._get_elem("Author", info.author)
+        body += await self._get_elem("Author", info.author, False)
+        html += await self._get_elem("Length", info.length)
+        body += await self._get_elem("Length", info.length, False)
+        html += await self._get_elem("Views", info.views)
+        body += await self._get_elem("Views", info.views, False)
+        html += await self._get_image(
+            info.thumbnail,
+            f"Thumbnail for {info.title}",
+            (info.width, info.height)
+        )
+        body += await self._get_image(
+            info.thumbnail,
+            f"Thumbnail for {info.title}",
+            (info.width, info.height),
+            False
+        )
+        html += await self._get_footer(info.source)
+        body += await self._get_footer(info.source, False)
+
+        html = f"<blockquote>{html}</blockquote>"
+
+        return TextMessageEventContent(
+            msgtype=MessageType.NOTICE,
+            format=Format.HTML,
+            body=body,
+            formatted_body=html
+        )
 
     async def _get_url_title(self, title: str, url: str, is_html: bool = True) -> str:
         if not url or not title:
             return ""
+
         if is_html:
             return f"<b>{await self._get_link(url, title, is_html)}</b><br>"
+
         return f"> {await self._get_link(url, f"**{title}**", is_html)}  \n>  \n"
 
     async def _get_link(self, url: str, text: str, is_html: bool = True) -> str:
@@ -198,15 +379,19 @@ class SpewTubeBot(Plugin):
     async def _get_elem(self, elem_name: str, elem: str, is_html: bool = True) -> str:
         if not elem:
             return ""
+
         if is_html:
             return f"<blockquote><b>{elem_name}:</b> {elem}</blockquote>"
+
         return f"> > **{elem_name}:** {elem}  \n>  \n"
 
     async def _get_footer(self, engine: str, is_html: bool = True) -> str:
         if not engine:
             return ""
+
         if is_html:
             return f"<br><b><sub>Results from {engine}</sub></b>"
+
         return f"> **Results from {engine}**"
 
     async def _get_image(
@@ -226,6 +411,7 @@ class SpewTubeBot(Plugin):
         """
         if not src:
             return ""
+
         width = f"width=\"{size[0]}\" " if size[0] else ""
         height = f"height=\"{size[1]}\" " if size[1] else ""
         # HTML
@@ -245,6 +431,7 @@ class SpewTubeBot(Plugin):
         content_type = await self._get_content_type(data)
         if not content_type:
             return ""
+
         return await self._upload_media(data, content_type.mime, f"image.{content_type.extension}")
 
     async def _download_image(self, url: str) -> bytes | None:
@@ -262,6 +449,7 @@ class SpewTubeBot(Plugin):
                 timeout=timeout,
                 raise_for_status=True
             )
+
             return await response.read()
         except ClientError as e:
             self.log.error(f"Downloading image - connection failed: {e}")
@@ -276,15 +464,19 @@ class SpewTubeBot(Plugin):
             return None
         try:
             content_type = await self.loop.run_in_executor(None, filetype.guess, data)
+
             if not content_type:
                 self.log.error("Failed to determine file type")
                 return None
+
             if content_type not in filetype.image_matchers:
                 self.log.error("Downloaded file is not an image")
                 return None
+
         except TypeError as e:
             self.log.error(f"Failed to determine file type: {e}")
             return None
+
         return content_type
 
     async def _upload_media(self, data: bytes, mime: str, name: str) -> str:
